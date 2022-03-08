@@ -338,7 +338,7 @@ def prepare_batch(batch):
     """
     # batch: [batch_size, (text, label)]
     batch_size = len(batch)
-
+    
     features, labels = zip(*batch)
     # features: tuple of length batch_size, 
     #        each element is a dict with keys = ["input_ids", "attention_mask"]
