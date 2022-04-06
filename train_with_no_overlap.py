@@ -57,9 +57,9 @@ def main(args):
         best_path = get_best_model_path(path)
         restore_dict = torch.load(best_path, map_location=device)
         model.load_state_dict(restore_dict)
-        train_loader = create_dataloader_with_zeroshot(args, model, tokenizer, train_texts, train_labels, device)
+        train_loader, train_dataset, revised_training_size = create_dataloader_with_zeroshot(args, model, tokenizer, train_texts, train_labels, device)
         print('Tasks:', args.pre_task, args.cur_task)
-        print('training_size:', args.training_size)
+        print('training_size:', revised_training_size)
         print('Train Set:', len(train_dataset), 'Valid Set:', len(valid_dataset))
 
     # train LMs on QA datasets

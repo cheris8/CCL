@@ -98,7 +98,7 @@ def create_dataloader_with_zeroshot(args, model, tokenizer, texts, labels, devic
     dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, text_per_sample, label_per_sample)
     data_loader = DataLoader(dataset, batch_size=1, shuffle=True)
     torch.cuda.empty_cache()
-    return data_loader
+    return data_loader, dataset, len(wrong_idxs)
 
 
 def replace_wrong_to_right_samples(args, model, tokenizer, texts, labels, device):
