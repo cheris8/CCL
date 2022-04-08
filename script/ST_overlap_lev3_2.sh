@@ -1,0 +1,3 @@
+CUDA_VISIBLE_DEVICES=2 python /home/intern/seungjun/commonsense/CCL/train_with_no_overlap.py --lm 'roberta-large'  --training_size 0.9 --pre_task cmqa csqa --cur_task piqa --training_type ST --split_type prob --batch_size 4
+CUDA_VISIBLE_DEVICES=2 python /home/intern/seungjun/commonsense/CCL/train_with_no_overlap.py --lm 'roberta-large'  --training_size 0.9 --pre_task cmqa csqa piqa --cur_task siqa --training_type ST --split_type prob --batch_size 4
+CUDA_VISIBLE_DEVICES=2 python /home/intern/seungjun/commonsense/CCL/evaluate.py --lm 'roberta-large'  --pre_task cmqa csqa piqa --cur_task siqa --training_type ST --split_type prob --batch_size 4

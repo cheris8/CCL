@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from transformers import RobertaTokenizer, RobertaModel, AdamW
+from sklearn.model_selection import train_test_split
 
 from sklearn.metrics import classification_report, accuracy_score, f1_score
 
@@ -66,6 +67,39 @@ def get_predictions_from_teacher_model(args, model, tokenizer, texts, labels, de
             epoch_logits.append(logits.to('cpu').tolist())
             torch.cuda.empty_cache()
     return epoch_logits
+
+def create_dataloader_with_zeroshot(args, model, tokenizer, texts, labels, device):
+    dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, texts, labels)
+    data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    model.to(device)
+    model.eval()
+    wrong_idxs = []
+    wrong_preds = []
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(tqdm(data_loader)):
+            input_ids = batch[0]['input_ids'].to(device)
+            attention_mask = batch[0]['attention_mask'].to(device)
+            label = batch[1].to(device)
+            output = model(input_ids=input_ids, attention_mask=attention_mask, labels=label)
+            loss, logit = output[0], output[1]
+            pred = torch.argmax(nn.Softmax(dim=1)(logit), dim=1)
+            if pred != label:
+                wrong_idxs.append(batch_idx)
+                wrong_preds.append(int(pred.to('cpu')))
+                torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
+    print(f'Number of incorrectly predicted samples: {len(wrong_idxs)}/{batch_idx}')
+    text_per_sample=[]
+    label_per_sample=[]
+    for wrong_idx, wrong_pred in zip(wrong_idxs, wrong_preds):
+        wrong_text = list(texts[wrong_idx])
+        wrong_label = labels[wrong_idx]
+        text_per_sample.append(tuple(wrong_text))
+        label_per_sample.append(wrong_label)
+    dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, text_per_sample, label_per_sample)
+    data_loader = DataLoader(dataset, batch_size=1, shuffle=True)
+    torch.cuda.empty_cache()
+    return data_loader, dataset, len(wrong_idxs)
 
 
 def replace_wrong_to_right_samples(args, model, tokenizer, texts, labels, device):
