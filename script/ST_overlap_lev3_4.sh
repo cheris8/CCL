@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=2 python /home/intern/seungjun/commonsense/CCL/evaluate.py --lm 'roberta-large'  --training_size 0.9 --pre_task csqa piqa siqa --cur_task cmqa --training_type ST --split_type prob --batch_size 4
