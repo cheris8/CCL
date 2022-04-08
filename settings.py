@@ -19,8 +19,8 @@ from utils import CriterionForKD, TrainerForKD, Trainer, CriterionForSKD
 
 def parser_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cur_dir', type=str, default='/home/intern/seungjun/commonsense/CCL')
-    parser.add_argument('--root_dir', type=str, default='/home/intern/nas')
+    parser.add_argument('--cur_dir', type=str, default='/home/chaehyeong/CKL')
+    parser.add_argument('--root_dir', type=str, default='/home/chaehyeong/nas')
 
     parser.add_argument('--lm', type=str, default='roberta-large', choices=['roberta-large', 'roberta-cskg'], help='Pre-trained LM or KG fine-tuned LM.')
     parser.add_argument('--pre_task', type=str, nargs='+', help='Which QA dataset is used for trainining LM.')
