@@ -1,5 +1,4 @@
 import os
-import random
 import json
 import pathlib
 import numpy as np
@@ -20,9 +19,6 @@ from dataset import load_siqa, load_csqa, load_cmqa, load_piqa, prepare_batch_KD
 from dataset import SocialiqaDataset, CommonsenseqaDataset, CosmosqaDataset, PhysicaliqaDataset
 from dataset import SocialiqaDatasetForKD, CommonsenseqaDatasetForKD, CosmosqaDatasetForKD, PhysicaliqaDatasetForKD
 
-random.seed(42)
-torch.manual_seed(42)
-np.random.seed(42)
 
 TASK_CONFIG = {
     'siqa':{'load':load_siqa, 'dataset':SocialiqaDataset, 'dataset-kd':SocialiqaDatasetForKD, 'context':True, 'question':True, 'num_choices':3, 'target_names':['Answer A', 'Answer B', 'Answer C'] },
@@ -32,21 +28,6 @@ TASK_CONFIG = {
 }
 
 
-def KLDivergence(A, B):
-    return np.sum([v for v in A * np.log2(A/B)])
-
-def JSDivergence(P, Q):
-    """Compute the Jensen-Shannon divergence between two probability distributions.
-    Input
-    -----
-    P, Q : array-like
-        Probability distributions of equal length that sum to 1
-    """
-    P = np.array(P)
-    Q = np.array(Q)
-    M = 0.5 * (P + Q)
-    return 0.5 * (KLDivergence(P, M) + KLDivergence(Q, M))
-
 def make_dir(d):
     pathlib.Path(d).mkdir(parents=True, exist_ok=True)
 
@@ -54,28 +35,6 @@ def save_samples(args, texts, labels, logits):
     file = {'texts':texts, 'labels':labels, 'logits':logits}
     with open(os.path.join(args.base_dir, 'additional_samples.json'), 'w') as f:
         json.dump(file, f)
-
-def sort_samples_by_similarity(args, texts, labels, logits, sampling_type):
-    # reference : uniform, skewed, random
-    if sampling_type == 'random':
-        return random.shuffle(texts), random.shuffle(labels), random.shuffle(logits)
-    else:
-        num_choices = TASK_CONFIG[args.cur_task]['num_choices']
-        scores = []
-        for label, logit in zip(labels, logits):
-            logit_softmaxed = nn.Softmax(dim=1)(torch.tensor(logit)).squeeze(0)
-            if sampling_type == 'uniform':
-                reference_list = [1/num_choices]*num_choices
-            elif sampling_type == 'skewed':
-                reference_list = [0]*num_choices
-                reference_list[label] = 1
-            score = JSDivergence(reference_list, logit_softmaxed)
-            scores.append(score)
-        assert len(texts) == len(labels) == len(logits) == len(scores)
-        sorted_texts = [text for _, text in sorted(zip(scores, texts))]
-        sorted_labels = [label for _, label in sorted(zip(scores, labels))]
-        sorted_logits = [logit for _, logit in sorted(zip(scores, logits))]
-        return sorted_texts, sorted_labels, sorted_logits
 
 
 def get_best_model_path(path):
@@ -90,102 +49,81 @@ def get_best_model_path(path):
     return os.path.join(path, acc_to_file.get(best_acc))
 
 
-
-def get_predictions_from_model(args, model, tokenizer, texts, labels):
+def get_predictions_from_teacher_model(args, model, tokenizer, texts, labels, device):
     dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, texts, labels)
     data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
-    model = model.to(args.device)
+    model = model.to(device)
     model.eval()
 
     epoch_logits = []
     with torch.no_grad():
         for batch in tqdm(data_loader):
-            input_ids = batch[0]['input_ids'].to(args.device)
-            attention_mask = batch[0]['attention_mask'].to(args.device)
-            labels = batch[1].to(args.device)
+            input_ids = batch[0]['input_ids'].to(device)
+            attention_mask = batch[0]['attention_mask'].to(device)
+            labels = batch[1].to(device)
             outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-            _, logits = outputs[0], outputs[1]
+            loss, logits = outputs[0], outputs[1]
             epoch_logits.append(logits.to('cpu').tolist())
             torch.cuda.empty_cache()
     return epoch_logits
 
+def create_dataloader_with_zeroshot(args, model, tokenizer, texts, labels, device):
+    dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, texts, labels)
+    data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
+    model.to(device)
+    model.eval()
+    wrong_idxs = []
+    wrong_preds = []
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(tqdm(data_loader)):
+            input_ids = batch[0]['input_ids'].to(device)
+            attention_mask = batch[0]['attention_mask'].to(device)
+            label = batch[1].to(device)
+            output = model(input_ids=input_ids, attention_mask=attention_mask, labels=label)
+            loss, logit = output[0], output[1]
+            pred = torch.argmax(nn.Softmax(dim=1)(logit), dim=1)
+            if pred != label:
+                wrong_idxs.append(batch_idx)
+                wrong_preds.append(int(pred.to('cpu')))
+                torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
+    print(f'Number of incorrectly predicted samples: {len(wrong_idxs)}/{batch_idx}')
+    text_per_sample=[]
+    label_per_sample=[]
+    for wrong_idx, wrong_pred in zip(wrong_idxs, wrong_preds):
+        wrong_text = list(texts[wrong_idx])
+        wrong_label = labels[wrong_idx]
+        text_per_sample.append(tuple(wrong_text))
+        label_per_sample.append(wrong_label)
+    dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, text_per_sample, label_per_sample)
+    data_loader = DataLoader(dataset, batch_size=1, shuffle=True)
+    torch.cuda.empty_cache()
+    return data_loader, dataset, len(wrong_idxs)
 
-def right_wrong_split(texts, labels, logits):
-    right_texts = [] ; wrong_texts = []
-    right_labels = [] ; wrong_labels = []
-    right_logits = [] ; wrong_logits = []
-    for text, label, logit in zip(texts, labels, logits):
-        # TODO np softmax
-        if np.argmax(logit) == label:
-            right_texts.append(text)
-            right_labels.append(label)
-            right_logits.append(logit)
-        elif np.argmax(logit) != label:
-            wrong_texts.append(text)
-            wrong_labels.append(label)
-            wrong_logits.append(logit)
-    return right_texts, wrong_texts, right_labels, wrong_labels, right_logits, wrong_logits
+def get_wrong_samples(args, model, tokenizer, texts, labels, device):
+    dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, texts, labels)
+    data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
-
-def get_answer_options_pool(texts, num_choices):
-    # set the pool of answer options for replacement
-    answer_options_pool = []
-    for text in texts:
-        for i in range(1, num_choices+1):
-            answer_options_pool.append(text[-i])
-    answer_options_pool = list(set(answer_options_pool))
-    return answer_options_pool
-
-
-def modify_wrong_to_right_samples(args, model, tokenizer, wrong_texts, wrong_labels, answer_options_pool):
-    print('Number of incorrectly predicted samples:', len(wrong_labels))
-
-    num_choices = TASK_CONFIG[args.cur_task]['num_choices']
-
-    model.to(args.device)
+    model.to(device)
     model.eval()
 
-    # find and save correctly predicted samples
-    right_texts = []; right_labels = []; right_logits = []
-    done_cnt = 0
-    for wrong_text, wrong_label in zip(wrong_texts, wrong_labels):
-        # targeting one incorrect sample
-        print(f'Trying {done_cnt}-th sample of {len(wrong_labels)} samples ...')
-        text_per_sample = []
-        label_per_sample = []
-        start_idx = TASK_CONFIG[args.cur_task]['context'] + TASK_CONFIG[args.cur_task]['question']
-        for i in range(0, len(answer_options_pool)-num_choices, num_choices):
-            for j, k in zip(range(num_choices), range(i, i+num_choices)):
-                if j == wrong_label:
-                    pass
-                else:
-                    wrong_text[start_idx+j] = answer_options_pool[k]
-            text_per_sample.append(tuple(wrong_text))
-            label_per_sample.append(wrong_label)
-        dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, text_per_sample, label_per_sample)
-        data_loader = DataLoader(dataset, batch_size=1, shuffle=True)
-        torch.cuda.empty_cache()
-        with torch.no_grad():
-            for batch_idx, batch in enumerate(data_loader):
-                input_ids = batch[0]['input_ids'].to(args.device)
-                attention_mask = batch[0]['attention_mask'].to(args.device)
-                label = batch[1].to(args.device)
-                output = model(input_ids=input_ids, attention_mask=attention_mask, labels=label)
-                _, logit = output[0], output[1]
-                pred = torch.argmax(nn.Softmax(dim=1)(logit), dim=1)
-                if pred == label:
-                    print(f'Select {batch_idx} for {done_cnt}-th sample ...')
-                    right_texts.append(text_per_sample[batch_idx])
-                    right_labels.append(label_per_sample[batch_idx])
-                    right_logits.append(logit.to('cpu').tolist())
-                    done_cnt += 1
-                    torch.cuda.empty_cache()
-                    break
-                torch.cuda.empty_cache()
-    torch.cuda.empty_cache()
-    save_samples(args, right_texts, right_labels, right_logits)
-    return right_texts, right_labels, right_logits
+    # gather incorrectly predicted samples
+    wrong_idxs = []
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(tqdm(data_loader)):
+            input_ids = batch[0]['input_ids'].to(device)
+            attention_mask = batch[0]['attention_mask'].to(device)
+            label = batch[1].to(device)
+            output = model(input_ids=input_ids, attention_mask=attention_mask, labels=label)
+            _, logit = output[0], output[1]
+            pred = torch.argmax(nn.Softmax(dim=1)(logit), dim=1)
+            if pred == label:
+                wrong_idxs.append(batch_idx)
+            torch.cuda.empty_cache()
+    print('Number of incorrectly predicted samples:', len(wrong_idxs))
+    return texts[wrong_idxs], labels[wrong_idxs]
+
 
 def replace_wrong_to_right_samples(args, model, tokenizer, texts, labels, device):
     dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, texts, labels)
@@ -235,6 +173,10 @@ def replace_wrong_to_right_samples(args, model, tokenizer, texts, labels, device
                 if j == wrong_label:
                     pass
                 else:
+                    #print(len(wrong_text))
+                    #print(wrong_text)
+                    #print(start_idx, j)
+                    #print(k, len(answer_options_pool))
                     wrong_text[start_idx+j] = answer_options_pool[k]
             text_per_sample.append(tuple(wrong_text))
             label_per_sample.append(wrong_label)
@@ -288,6 +230,7 @@ def test(model, loader, device):
             epoch_loss += loss.item()
 
             torch.cuda.empty_cache()
+
     return epoch_loss/len(loader), epoch_true_labels, epoch_preds
 
 
@@ -337,7 +280,7 @@ class CriterionForKD(object):
         self.T = T
     def __call__(self, student_logits, teacher_logits, teacher_labels, labels, loss):
         return self.criterion(student_logits, teacher_logits, teacher_labels, labels, loss)
-    
+
     def knowledge_distillation_loss(self, student_logits, teacher_logits, teacher_labels, labels, loss):
         if teacher_logits == None:
             return loss
@@ -464,7 +407,7 @@ class Trainer(object):
             print("Valid eval")
             print(classification_report(valid_labels, valid_preds, target_names=target_names))
             
-            valid_acc = accuracy_score(valid_labels, valid_preds)
+            valid_acc = accuracy_score(valid_labels, valid_preds) 
             model_name = 'bs{}-lr{}-epoch{}-acc{:.04f}.pt'.format(args.batch_size, args.lr, i+1, valid_acc)
             model_path = os.path.join(args.base_dir, model_name)
 
@@ -569,8 +512,7 @@ class TrainerForKD(object):
 
             valid_acc = accuracy_score(valid_labels, valid_preds)
 
-            model_name = 'bs{}-lr{}-epoch{}-acc{:.04f}.pt'.format(args.batch_size, args.lr, i+1, valid_acc) 
-            # model_name = 'bs{}-lr{}-alpha{}-epoch{}-acc{:.04f}.pt'.format(args.batch_size, args.lr, args.alpha, i+1, valid_acc)     
+            model_name = 'bs{}-lr{}-epoch{}-acc{:.04f}.pt'.format(args.batch_size, args.lr, i+1, valid_acc)     
             model_path = os.path.join(args.base_dir, model_name)
 
             early_stopping(valid_epoch_loss, self.model, model_path)
