@@ -2,7 +2,7 @@ import torch
 from torch import nn
 import transformers
 from transformers import RobertaModel
-
+import torch.nn.functional as F
 
 class Multiple_Choice_Model(nn.Module):
     def __init__(self, roberta_model: RobertaModel, dropout: float = None):
@@ -31,7 +31,6 @@ class Multiple_Choice_Model(nn.Module):
         loss = loss_fct(reshaped_logits, labels)
 
         return loss, reshaped_logits
-
 
 
 class MultitaskModel(transformers.PreTrainedModel):
@@ -89,3 +88,24 @@ class MultitaskModel(transformers.PreTrainedModel):
 	def forward(self, task_name, **kwargs):
 		return self.taskmodels_dict[task_name](**kwargs)
 
+class BiEncoder(nn.Module):
+    def __init__(self, context_bert_model, response_bert_model):
+        super(BiEncoder, self).__init__()
+        self.context_bert = context_bert_model
+        self.response_bert = response_bert_model
+    def forward(self, context_input_ids, context_input_masks,
+                            responses_input_ids, responses_input_masks):
+
+        context = self.context_bert(input_ids = context_input_ids, attention_mask = context_input_masks)
+
+        # print(output[1])
+
+        response = self.response_bert(input_ids = responses_input_ids, attention_mask = responses_input_masks)
+
+        context_vector = context[1]
+        response_vector = response[1]
+        dot_product = torch.matmul(context_vector, response_vector.t())  # [bs, bs]
+        mask = torch.eye(context_input_ids.size(0)).to(context_input_ids.device)
+        loss = F.log_softmax(dot_product, dim=-1) * mask
+        loss = (-loss.sum(dim=1)).mean()
+        return loss

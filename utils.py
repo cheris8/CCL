@@ -576,3 +576,85 @@ class TrainerForKD(object):
             
             torch.cuda.empty_cache()
 
+class TrainerForEncoder(object):
+    """
+    Trainer for training a multiple choice classification model.
+    For FT, ST.
+    """
+    def __init__(self, model, optimizer, device='cpu'):
+        self.model = model.to(device)
+        self.optimizer = optimizer
+        self.device = device
+
+    def _print_summary(self):
+        print(self.model)
+        print(self.optimizer)
+
+    def train(self, loader):
+        """
+        Run a single epoch of training
+        """
+        self.model.train() # Run model in training mode
+
+        epoch_loss = 0
+        for batch in tqdm(loader):
+            # clear gradient
+            self.optimizer.zero_grad()
+            input_ids_context, input_ids_answer, attention_mask_context, attention_mask_answer =batch
+            loss = self.model(context_input_ids=input_ids_context.to(self.device), context_input_masks = attention_mask_context.to(self.device),
+                            responses_input_ids=input_ids_answer.to(self.device), responses_input_masks=attention_mask_answer.to(self.device))
+            
+            epoch_loss += loss.item()
+            
+            # back propagation
+            loss.backward()
+            # do gradient descent
+            self.optimizer.step()
+
+            torch.cuda.empty_cache()
+        return epoch_loss / len(loader)
+
+    def evaluate(self, loader):
+        """
+        Evaluate the model on a validation set.
+        Only do batch size = 1.
+        """
+        self.model.eval() # Run model in eval mode (disables dropout layer)
+
+        epoch_true_labels = []
+        epoch_preds = []
+        epoch_loss = 0
+        with torch.no_grad(): # Disable gradient computation - required only during training
+            for batch in tqdm(loader):
+                # input_ids shape: (batch_size, num_choices, sequence_length)
+                input_ids_context, input_ids_answer, attention_mask_context, attention_mask_answer =batch
+                loss = self.model(context_input_ids=input_ids_context.to(self.device), context_input_masks = attention_mask_context.to(self.device),
+                                responses_input_ids=input_ids_answer.to(self.device), responses_input_masks=attention_mask_answer.to(self.device))
+                
+                epoch_loss += loss.item()
+
+                torch.cuda.empty_cache()
+        return epoch_loss/len(loader)
+
+    def get_model_dict(self):
+        return self.model.state_dict()
+
+    def run_training(self, args, train_loader, valid_loader, base_dir):
+        early_stopping = EarlyStopping(patience=5, verbose=True)
+
+        for i in range(args.n_epoch):
+            train_epoch_loss= self.train(train_loader)
+            valid_epoch_loss = self.evaluate(valid_loader)
+            
+            print(f"Epoch {i}")
+            print(f"Train loss: {train_epoch_loss}")
+            print(f"Valid loss: {valid_epoch_loss}")
+            model_name = 'bs{}-epoch{}-loss{:.04f}.pt'.format(args.batch_size, i+1, valid_epoch_loss)
+            model_path = os.path.join(base_dir, model_name)
+
+            early_stopping(valid_epoch_loss, self.model, model_path)
+            if early_stopping.early_stop:
+                print("Early stopping")              
+                break
+
+            torch.cuda.empty_cache()

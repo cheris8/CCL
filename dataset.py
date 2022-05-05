@@ -105,6 +105,91 @@ def load_piqa(root_dir, mode):
     return data, labels
 
 
+
+def load_siqa_answersheet(root_dir):
+    file_path = os.path.join(root_dir, 'data', 'siqa', "train-predictions.jsonl")
+    json_file = pd.read_json(path_or_buf=file_path, lines=True)
+    context = [elem for elem in zip(json_file['context'].tolist(), json_file['question'].tolist())]
+    answer_candidate = [cand for cand in zip(json_file['answerA'].tolist(), json_file['answerB'].tolist(), json_file['answerC'].tolist())]
+    corrects = json_file['correct'].tolist()
+    correct_to_label = {'A':0, 'B':1, 'C':2}
+    labels = [correct_to_label[correct] for correct in corrects]
+    train_data=[]
+    assert len(context) == len(answer_candidate) == len(labels)
+    for k in range(len(context)):
+        answer = answer_candidate[k][labels[k]]
+        train_data.append((context[k], answer))
+
+    
+    return train_data
+
+def load_csqa_answersheet(root_dir):
+
+    file_path = os.path.join(root_dir, 'data', 'csqa', 'train.jsonl')
+    json_file = pd.read_json(path_or_buf=file_path, lines=True)
+    data = []
+    answerkeys = json_file['answerKey'].tolist()
+    print(answerkeys)
+    answerkey_to_label = {'A':0, 'B':1, 'C':2, 'D':3, 'E':4}
+    labels = [answerkey_to_label[answerkey] for answerkey in answerkeys]
+    questions = json_file['question'].tolist()
+    assert len(questions) == len(labels)
+    idx=0
+    for sample in json_file['question']:
+        question = sample['stem']
+        get_idx = labels[idx]
+        answer = sample['choices'][get_idx]['text']
+        data.append((question, answer))
+        idx+=1
+
+    return data
+
+def load_cmqa_answersheet(root_dir):
+    file_path = os.path.join(root_dir, 'data', 'cmqa', "train.jsonl")
+    json_file = pd.read_json(path_or_buf=file_path, lines=True)
+    context = [elem for elem in zip(json_file['context'].tolist(), json_file['question'].tolist())]
+    answer_candidate = [cand for cand in zip(json_file['answer0'].tolist(), json_file['answer1'].tolist(), json_file['answer2'].tolist(), json_file['answer3'].tolist())]
+    labels = json_file['label'].tolist()
+    assert len(context) == len(answer_candidate) == len(labels)
+    train_data=[]
+    for k in range(len(context)):
+        answer = answer_candidate[k][labels[k]]
+        train_data.append((context[k], answer))        
+    return train_data
+
+def load_piqa_answersheet(root_dir):
+    file_path = os.path.join(root_dir, 'data', 'piqa', 'train.jsonl')
+    json_file = pd.read_json(path_or_buf=file_path, lines=True)
+    context = json_file['goal'].tolist()
+    answer_candidate = [cand for cand in zip(json_file['sol1'].tolist(), json_file['sol2'].tolist())]
+    labels = json_file['label'].tolist()
+    assert len(context) == len(answer_candidate) == len(labels)
+    train_data=[]
+    for k in range(len(context)):
+        answer = answer_candidate[k][labels[k]]
+        train_data.append((context[k], answer))        
+    return train_data
+
+class BiEncoderDataset(Dataset):
+    def __init__(self, tokenizer, input):
+        self.roberta_tokenizer = tokenizer
+        self.input = input
+        self.context_tokenized=[]
+        self.answer_tokenized=[]
+        for idx in self.input:
+            context = idx[0]
+            answer = idx[1]
+            encoded_context = self.roberta_tokenizer(context, padding=True, truncation=True, return_tensors='pt')
+            encoded_answer = self.roberta_tokenizer(answer, padding=True, truncation=True, return_tensors='pt')
+            self.context_tokenized.append(encoded_context)
+            self.answer_tokenized.append(encoded_answer)
+
+    def __getitem__(self, idx):
+        return (self.context_tokenized[idx], self.answer_tokenized[idx])
+
+    def __len__(self):
+        return len(self.input)
+
 class AtomicDataset(Dataset):
     def __init__(self, tokenizer, x, y):
         # x: list of tuples containing (context, answer1, answer2, answer3)
@@ -426,4 +511,59 @@ def prepare_batch_KD(batch):
     tensor_labels = torch.LongTensor(labels)
 
     batch = (texts, tensor_labels, tensor_pseudo_labels)
+    return batch
+
+
+def biencoder_batch(batch):
+    
+    batch_size = len(batch)
+    contexts, answers = zip(*batch)
+
+    input_ids_context=[]
+    attention_mask_context=[]
+    max_len_for_context=0
+    for context in contexts:
+        input_ids_context.append(context['input_ids'][0])
+        attention_mask_context.append(context['attention_mask'][0])
+        if context['input_ids'][0].shape[0] > max_len_for_context:
+            max_len_for_context = context['input_ids'][0].shape[0]
+
+    input_ids_answer=[]
+    attention_mask_answer=[]
+    max_len_for_answer=0
+    for answer in answers:
+        input_ids_answer.append(answer['input_ids'][0])
+        attention_mask_answer.append(answer['attention_mask'][0])
+        if answer['input_ids'][0].shape[0] > max_len_for_answer:
+            max_len_for_answer = answer['input_ids'][0].shape[0]
+
+    padded_input_ids_context=[]
+    padded_input_ids_answer=[]
+    padded_attention_mask_context=[]
+    padded_attention_mask_answer=[]
+    for input_ids, attention_mask in zip(input_ids_context, attention_mask_context):
+        padding_len = max_len_for_context - input_ids.shape[0]
+        if padding_len > 0:
+            padded_input_ids = torch.cat([input_ids, torch.LongTensor([0] * padding_len)])
+            padded_attention_mask = torch.cat([attention_mask, torch.LongTensor([0] * padding_len)])
+            padded_input_ids_context.append(padded_input_ids)
+            padded_attention_mask_context.append(padded_attention_mask)            
+        else:
+            padded_input_ids_context.append(input_ids)
+            padded_attention_mask_context.append(attention_mask)
+
+    for input_ids, attention_mask in zip(input_ids_answer, attention_mask_answer):
+        padding_len = max_len_for_answer - input_ids.shape[0]
+        if padding_len > 0:
+            padded_input_ids = torch.cat([input_ids, torch.LongTensor([0] * padding_len)])
+            padded_attention_mask = torch.cat([attention_mask, torch.LongTensor([0] * padding_len)])
+            padded_input_ids_answer.append(padded_input_ids)
+            padded_attention_mask_answer.append(padded_attention_mask)            
+        else:
+            padded_input_ids_answer.append(input_ids)
+            padded_attention_mask_answer.append(attention_mask)
+            
+    
+
+    batch = (torch.stack(padded_input_ids_context), torch.stack(padded_input_ids_answer), torch.stack(padded_attention_mask_context), torch.stack(padded_attention_mask_answer))
     return batch
