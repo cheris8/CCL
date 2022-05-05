@@ -3,7 +3,6 @@ import random
 import json
 import pathlib
 import numpy as np
-from numpy.lib.npyio import _savez_compressed_dispatcher
 import pandas as pd
 from tqdm.auto import tqdm
 
@@ -12,7 +11,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from sentence_transformers import SentenceTransformer, util
 from transformers import RobertaTokenizer, RobertaModel, AdamW
 from sklearn.model_selection import train_test_split
 
@@ -22,8 +20,6 @@ from dataset import load_siqa, load_csqa, load_cmqa, load_piqa, prepare_batch_KD
 from dataset import SocialiqaDataset, CommonsenseqaDataset, CosmosqaDataset, PhysicaliqaDataset
 from dataset import SocialiqaDatasetForKD, CommonsenseqaDatasetForKD, CosmosqaDatasetForKD, PhysicaliqaDatasetForKD
 
-import warnings
-warnings.filterwarnings(action='ignore')
 random.seed(42)
 torch.manual_seed(42)
 np.random.seed(42)
@@ -43,7 +39,8 @@ def JSDivergence(P, Q):
     """Compute the Jensen-Shannon divergence between two probability distributions.
     Input
     -----
-    P, Q : array-like Probability distributions of equal length that sum to 1
+    P, Q : array-like
+        Probability distributions of equal length that sum to 1
     """
     P = np.array(P)
     Q = np.array(Q)
@@ -59,41 +56,26 @@ def save_samples(args, texts, labels, logits):
         json.dump(file, f)
 
 def sort_samples_by_similarity(args, texts, labels, logits, sampling_type):
-    # reference : uniform, skewed, wrong, reversed
-    num_choices = TASK_CONFIG[args.cur_task]['num_choices']
-    scores = []
-    if sampling_type == 'uniform':
-        reference_list = [1/num_choices]*num_choices
+    # reference : uniform, skewed, random
+    if sampling_type == 'random':
+        return random.shuffle(texts), random.shuffle(labels), random.shuffle(logits)
+    else:
+        num_choices = TASK_CONFIG[args.cur_task]['num_choices']
+        scores = []
         for label, logit in zip(labels, logits):
             logit_softmaxed = nn.Softmax(dim=1)(torch.tensor(logit)).squeeze(0)
+            if sampling_type == 'uniform':
+                reference_list = [1/num_choices]*num_choices
+            elif sampling_type == 'skewed':
+                reference_list = [0]*num_choices
+                reference_list[label] = 1
             score = JSDivergence(reference_list, logit_softmaxed)
             scores.append(score)
-    elif sampling_type == 'skewed':
-        for label, logit in zip(labels, logits):
-            logit_softmaxed = nn.Softmax(dim=1)(torch.tensor(logit)).squeeze(0)
-            reference_list = [0]*num_choices
-            reference_list[label] = 1
-            score = JSDivergence(reference_list, logit_softmaxed)
-            scores.append(score)
-    elif sampling_type == 'reversed':
-        for label, logit in zip(labels, logits):
-            logit_softmaxed = nn.Softmax(dim=1)(torch.tensor(logit)).squeeze(0)
-            scores_per_reference_list = []
-            for i in range(num_choices):
-                if i == label:
-                    pass
-                else:
-                    reference_list = [0]*num_choices
-                    reference_list[i] = 1
-                    reference_list = np.clip(reference_list, 1e-10, 1 - 1e-10) 
-                    score = JSDivergence(reference_list, logit_softmaxed)
-                    scores_per_reference_list.append(score)
-            scores.append(min(scores_per_reference_list))
-    assert len(texts) == len(labels) == len(logits) == len(scores)
-    sorted_texts = [text for _, text in sorted(zip(scores, texts))]
-    sorted_labels = [label for _, label in sorted(zip(scores, labels))]
-    sorted_logits = [logit for _, logit in sorted(zip(scores, logits))]
-    return sorted_texts, sorted_labels, sorted_logits
+        assert len(texts) == len(labels) == len(logits) == len(scores)
+        sorted_texts = [text for _, text in sorted(zip(scores, texts))]
+        sorted_labels = [label for _, label in sorted(zip(scores, labels))]
+        sorted_logits = [logit for _, logit in sorted(zip(scores, logits))]
+        return sorted_texts, sorted_labels, sorted_logits
 
 
 def get_best_model_path(path):
@@ -156,45 +138,33 @@ def get_answer_options_pool(texts, num_choices):
     return answer_options_pool
 
 
-def create_data_per_sample(num_choices, start_idx, target_text, target_label, answer_options_pool):
-    target_text = list(target_text)
-    text_per_sample = [] ; label_per_sample = []
-    for i in range(0, len(answer_options_pool)-num_choices):
-        for j, k in zip(range(num_choices), range(i, i+num_choices)):
-            if j == target_label:
-                pass
-            else:
-                target_text[start_idx+j] = answer_options_pool[k]
-        text_per_sample.append(tuple(target_text))
-        label_per_sample.append(target_label)
-    return text_per_sample, label_per_sample
-
-
-def modify_wrong_to_right_samples_by_sbert(args, model, tokenizer, wrong_texts, wrong_labels, answer_options_pool):
-    
+def modify_wrong_to_right_samples(args, model, tokenizer, wrong_texts, wrong_labels, answer_options_pool):
     print('Number of incorrectly predicted samples:', len(wrong_labels))
 
     num_choices = TASK_CONFIG[args.cur_task]['num_choices']
-    start_idx = TASK_CONFIG[args.cur_task]['context'] + TASK_CONFIG[args.cur_task]['question']
 
     model.to(args.device)
     model.eval()
-
-    sbert = SentenceTransformer('all-MiniLM-L6-v2')
-    answer_options_embeddings = sbert.encode(answer_options_pool)
 
     # find and save correctly predicted samples
     right_texts = []; right_labels = []; right_logits = []
     done_cnt = 0
     for wrong_text, wrong_label in zip(wrong_texts, wrong_labels):
+        # targeting one incorrect sample
         print(f'Trying {done_cnt}-th sample of {len(wrong_labels)} samples ...')
-        anchor_embedding = sbert.encode(wrong_text[start_idx+wrong_label]) # ground-truth embedding
-        cos_sim = util.cos_sim(anchor_embedding, answer_options_embeddings).squeeze(0).tolist()
-        answer_options_sorted = [answer_option for sim, answer_option in sorted(zip(cos_sim, answer_options_pool), reverse=True) if (sim < 0.9)]
-
-        text_per_sample, label_per_sample = create_data_per_sample(num_choices, start_idx, wrong_text, wrong_label, answer_options_sorted)
+        text_per_sample = []
+        label_per_sample = []
+        start_idx = TASK_CONFIG[args.cur_task]['context'] + TASK_CONFIG[args.cur_task]['question']
+        for i in range(0, len(answer_options_pool)-num_choices, num_choices):
+            for j, k in zip(range(num_choices), range(i, i+num_choices)):
+                if j == wrong_label:
+                    pass
+                else:
+                    wrong_text[start_idx+j] = answer_options_pool[k]
+            text_per_sample.append(tuple(wrong_text))
+            label_per_sample.append(wrong_label)
         dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, text_per_sample, label_per_sample)
-        data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
+        data_loader = DataLoader(dataset, batch_size=1, shuffle=True)
         torch.cuda.empty_cache()
         with torch.no_grad():
             for batch_idx, batch in enumerate(data_loader):
@@ -217,36 +187,70 @@ def modify_wrong_to_right_samples_by_sbert(args, model, tokenizer, wrong_texts, 
     save_samples(args, right_texts, right_labels, right_logits)
     return right_texts, right_labels, right_logits
 
+def replace_wrong_to_right_samples(args, model, tokenizer, texts, labels, device):
+    dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, texts, labels)
+    data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
 
-def modify_wrong_to_right_samples(args, model, tokenizer, wrong_texts, wrong_labels, answer_options_pool):
-    print('Number of incorrectly predicted samples:', len(wrong_labels))
-
-    num_choices = TASK_CONFIG[args.cur_task]['num_choices']
-    start_idx = TASK_CONFIG[args.cur_task]['context'] + TASK_CONFIG[args.cur_task]['question']
-
-    model.to(args.device)
+    model.to(device)
     model.eval()
+
+    # gather incorrectly predicted samples
+    wrong_idxs = []
+    wrong_preds = []
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(tqdm(data_loader)):
+            input_ids = batch[0]['input_ids'].to(device)
+            attention_mask = batch[0]['attention_mask'].to(device)
+            label = batch[1].to(device)
+            output = model(input_ids=input_ids, attention_mask=attention_mask, labels=label)
+            loss, logit = output[0], output[1]
+            pred = torch.argmax(nn.Softmax(dim=1)(logit), dim=1)
+            if pred != label:
+                wrong_idxs.append(batch_idx)
+                wrong_preds.append(int(pred.to('cpu')))
+                torch.cuda.empty_cache()
+            torch.cuda.empty_cache()
+    print('Number of incorrectly predicted samples:', len(wrong_idxs))
+
+    # set the pool of answer options for replacement
+    num_choices = TASK_CONFIG[args.cur_task]['num_choices']
+    answer_options_pool = []
+    for text in texts:
+        for i in range(1, num_choices+1):
+            answer_options_pool.append(text[-i])
+    answer_options_pool = list(set(answer_options_pool))
 
     # find and save correctly predicted samples
     right_texts = []; right_labels = []; right_logits = []
     done_cnt = 0
-    for wrong_text, wrong_label in zip(wrong_texts, wrong_labels):
-        # targeting one incorrect sample
-        print(f'Trying {done_cnt}-th sample of {len(wrong_labels)} samples ...')
-        text_per_sample, label_per_sample = create_data_per_sample(num_choices, start_idx, wrong_text, wrong_label, answer_options_pool)
+    for wrong_idx, wrong_pred in zip(wrong_idxs, wrong_preds): # targeting one incorrect sample
+        print(f'Trying {wrong_idx}-th sample ... {done_cnt}/{len(wrong_idxs)}')
+        text_per_sample = []
+        label_per_sample = []
+        wrong_text = list(texts[wrong_idx])
+        wrong_label = labels[wrong_idx]
+        start_idx = TASK_CONFIG[args.cur_task]['context'] + TASK_CONFIG[args.cur_task]['question']
+        for i in range(0, len(answer_options_pool)-num_choices, num_choices):
+            for j, k in zip(range(num_choices), range(i, i+num_choices)):
+                if j == wrong_label:
+                    pass
+                else:
+                    wrong_text[start_idx+j] = answer_options_pool[k]
+            text_per_sample.append(tuple(wrong_text))
+            label_per_sample.append(wrong_label)
         dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, text_per_sample, label_per_sample)
         data_loader = DataLoader(dataset, batch_size=1, shuffle=True)
         torch.cuda.empty_cache()
         with torch.no_grad():
             for batch_idx, batch in enumerate(data_loader):
-                input_ids = batch[0]['input_ids'].to(args.device)
-                attention_mask = batch[0]['attention_mask'].to(args.device)
-                label = batch[1].to(args.device)
+                input_ids = batch[0]['input_ids'].to(device)
+                attention_mask = batch[0]['attention_mask'].to(device)
+                label = batch[1].to(device)
                 output = model(input_ids=input_ids, attention_mask=attention_mask, labels=label)
-                _, logit = output[0], output[1]
+                loss, logit = output[0], output[1]
                 pred = torch.argmax(nn.Softmax(dim=1)(logit), dim=1)
                 if pred == label:
-                    print(f'Select {batch_idx} for {done_cnt}-th sample ...')
+                    print(f'Select {batch_idx} for {wrong_idx}-th sample ...')
                     right_texts.append(text_per_sample[batch_idx])
                     right_labels.append(label_per_sample[batch_idx])
                     right_logits.append(logit.to('cpu').tolist())

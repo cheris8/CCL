@@ -7,7 +7,8 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from transformers import RobertaTokenizer, AdamW, RobertaModel
+import transformers
+from transformers import RobertaTokenizer, RobertaModel
 
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, classification_report
 
@@ -15,6 +16,9 @@ from settings import args, TASK_CONFIG, TRAINING_CONFIG
 from model import Multiple_Choice_Model
 from utils import get_best_model_path, test
 
+import warnings
+warnings.filterwarnings(action='ignore')
+transformers.logging.set_verbosity_error()
 
 random.seed(42)
 torch.manual_seed(42)
@@ -69,5 +73,4 @@ def main(args):
 
 
 if __name__ == '__main__':
-    #args = parser_args()
     main(args)

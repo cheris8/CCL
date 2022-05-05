@@ -1,5 +1,6 @@
 import os
 import argparse
+from xmlrpc.client import boolean
 import numpy as np
 from tqdm.auto import tqdm
 
@@ -11,8 +12,9 @@ from transformers import RobertaTokenizer, RobertaModel, AdamW
 from sklearn.model_selection import train_test_split
 
 from dataset import load_siqa, load_csqa, load_cmqa, load_piqa, prepare_batch_KD, prepare_batch
-from dataset import SocialiqaDataset, CommonsenseqaDataset, CosmosqaDataset, PhysicaliqaDataset
 from dataset import SocialiqaDatasetForKD, CommonsenseqaDatasetForKD, CosmosqaDatasetForKD, PhysicaliqaDatasetForKD
+from dataset import SocialiqaDataset, CommonsenseqaDataset, CosmosqaDataset, PhysicaliqaDataset
+from model import Multiple_Choice_Model
 from utils import CriterionForKD, TrainerForKD, Trainer, CriterionForSKD
 
 
@@ -25,11 +27,10 @@ def parser_args():
     parser.add_argument('--pre_task', type=str, nargs='+', help='Which QA dataset is used for trainining LM.')
     parser.add_argument('--cur_task', type=str, required=True, choices=['siqa', 'csqa', 'cmqa', 'piqa'], help='Which QA dataset to use for training LM.')
 
-    parser.add_argument('--training_type', choices=['FT', 'ST', 'STKD', 'STDKD', 'STSKD', 'STAKD', 'STRKD','SamplingRandomST', 'SamplingUniformST', 'SamplingSkewedST', 'SamplingSkewedSTKD', 'SamplingReversedST', 'SamplingReversedSTKD'])
+    parser.add_argument('--training_type', choices=['FT', 'ST', 'STKD', 'STDKD', 'STSKD', 'STAKD', 'STRKD', 'SamplingUniformST', 'SamplingSkewedST', 'SamplingSkewedSTKD'])
     parser.add_argument('--split_type', choices=['prob', 'num'])
     parser.add_argument('--training_size', required=True, help='Number/Proportion of samples to use for training LM.')
-    parser.add_argument('--sampling_type', choices=['random', 'uniform', 'skewed', 'reversed'])
-    parser.add_argument('--negative', type=str, choices=['sbert'], default=None)
+    parser.add_argument('--sampling_type', choices=['uniform', 'skewed'])
 
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--lr', type=float, default=1e-6)
@@ -49,18 +50,11 @@ def parser_args():
             f'-ts{args.training_size}-'.join(args.pre_task)+f'-ts{args.training_size}'
         )
     
-    if args.negative is not None:
-        args.base_dir = os.path.join(
-            args.root_dir, 'CCL', args.lm, 
-            f'-ts{args.training_size}-'.join(args.pre_task) + f'-ts{args.training_size}-' + args.cur_task + f'-ts{args.training_size}' if 'ST' in args.training_type else args.cur_task + f'-ts{args.training_size}',
-            args.training_type, args.negative
-            )
-    else:
-        args.base_dir = os.path.join(
-            args.root_dir, 'CCL', args.lm, 
-            f'-ts{args.training_size}-'.join(args.pre_task) + f'-ts{args.training_size}-' + args.cur_task + f'-ts{args.training_size}' if 'ST' in args.training_type else args.cur_task + f'-ts{args.training_size}',
-            args.training_type
-            )
+    args.base_dir = os.path.join(
+        args.root_dir, 'CCL', args.lm, 
+        f'-ts{args.training_size}-'.join(args.pre_task) + f'-ts{args.training_size}-' + args.cur_task + f'-ts{args.training_size}' if 'ST' in args.training_type else args.cur_task + f'-ts{args.training_size}',
+        args.training_type
+    )
     args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
     return args
@@ -82,10 +76,7 @@ TRAINING_CONFIG = {
     'STRKD': {'criterion':CriterionForKD, 'trainer':TrainerForKD, 'collate_fn':prepare_batch_KD},
     'STSKD': {'criterion':CriterionForSKD, 'trainer':TrainerForKD, 'collate_fn':prepare_batch_KD},
     'STAKD': {'criterion':CriterionForSKD, 'trainer':TrainerForKD, 'collate_fn':prepare_batch_KD},
-    'SamplingRandomST': {'trainer':Trainer, 'collate_fn':prepare_batch},
     'SamplingUniformST': {'trainer':Trainer, 'collate_fn':prepare_batch},
     'SamplingSkewedST': {'trainer':Trainer, 'collate_fn':prepare_batch},
-    'SamplingSkewedSTKD': {'criterion':CriterionForKD, 'trainer':TrainerForKD, 'collate_fn':prepare_batch_KD},
-    'SamplingReversedST': {'trainer':Trainer, 'collate_fn':prepare_batch},
-    'SamplingReversedSTKD': {'criterion':CriterionForKD, 'trainer':TrainerForKD, 'collate_fn':prepare_batch_KD}
+    'SamplingSkewedSTKD': {'criterion':CriterionForKD, 'trainer':TrainerForKD, 'collate_fn':prepare_batch_KD}
 }

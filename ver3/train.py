@@ -9,19 +9,14 @@ from tqdm.auto import tqdm
 import torch
 from torch.utils.data import DataLoader
 
-import transformers
 from transformers import RobertaTokenizer, RobertaModel, AdamW
 
 from sklearn.model_selection import train_test_split
 
 from settings import args, TASK_CONFIG, TRAINING_CONFIG
 from model import Multiple_Choice_Model
-from utils import make_dir, get_best_model_path, get_predictions_from_model, get_answer_options_pool, modify_wrong_to_right_samples_by_sbert, right_wrong_split, modify_wrong_to_right_samples, sort_samples_by_similarity
+from utils import make_dir, get_best_model_path, get_predictions_from_model, get_answer_options_pool, right_wrong_split, modify_wrong_to_right_samples, sort_samples_by_similarity
 
-
-import warnings
-warnings.filterwarnings(action='ignore')
-transformers.logging.set_verbosity_error()
 
 random.seed(42)
 torch.manual_seed(42)
@@ -44,10 +39,7 @@ def main(args):
     # load trained model
     if 'ST' in args.training_type:
         if len(args.pre_task) > 1:
-            if args.negative is not None:
-                path = os.path.join(args.pre_task_dir, args.training_type, args.negative)
-            else:
-                path = os.path.join(args.pre_task_dir, args.training_type)
+            path = os.path.join(args.pre_task_dir, args.training_type)
         else:
             path = os.path.join(args.pre_task_dir, 'FT')
         best_path = get_best_model_path(path)
@@ -81,60 +73,28 @@ def main(args):
         elif 'STRKD' in args.training_type:
             # replace incorrect samples to correct samples
             train_texts, wrong_texts, train_labels, wrong_labels, train_logits, _ = right_wrong_split(train_texts, train_labels, train_logits)
-            if args.negative == 'sbert':
-                if os.path.exists(os.path.join(args.base_dir, 'additional_samples.json')):
-                    print('Load saved additional samples ...')
-                    with open(os.path.join(args.base_dir, 'additional_samples.json'), 'r') as f:
-                        json_file = json.load(f)
-                        additional_train_texts = json_file['texts']
-                        additional_train_labels = json_file['labels']
-                        additional_train_logits = json_file['logits']
-                else:
-                    print('Generate additional samples ...')
-                    additional_train_texts, additional_train_labels, additional_train_logits = modify_wrong_to_right_samples_by_sbert(args, model, tokenizer, wrong_texts, wrong_labels, answer_options_pool)
-            elif args.negative is None:
-                if os.path.exists(os.path.join(args.base_dir, 'additional_samples.json')):
-                    print('Load saved additional samples ...')
-                    with open(os.path.join(args.base_dir, 'additional_samples.json'), 'r') as f:
-                        json_file = json.load(f)
-                        additional_train_texts = json_file['texts']
-                        additional_train_labels = json_file['labels']
-                        additional_train_logits = json_file['logits']
-                else:
-                    print('Generate additional samples ...')
-                    additional_train_texts, additional_train_labels, additional_train_logits = modify_wrong_to_right_samples(args, model, tokenizer, wrong_texts, wrong_labels, answer_options_pool)
+            additional_train_texts, additional_train_labels, additional_train_logits = modify_wrong_to_right_samples(args, model, tokenizer, wrong_texts, wrong_labels, answer_options_pool)
             train_texts.extend(additional_train_texts)
             train_labels.extend(additional_train_labels)
             train_logits.extend(additional_train_logits)
+        # elif 'STSKD':
         elif 'STAKD' in args.training_type:
             # augment correctly modified samples
-            if args.negative == 'sbert':
-                if os.path.exists(os.path.join(args.base_dir, 'additional_samples.json')):
-                    print('Load saved additional samples ...')
-                    with open(os.path.join(args.base_dir, 'additional_samples.json'), 'r') as f:
-                        json_file = json.load(f)
-                        additional_train_texts = json_file['texts']
-                        additional_train_labels = json_file['labels']
-                        additional_train_logits = json_file['logits']
-                else:
-                    print('Generate additional samples ...')
-                    _, wrong_texts, _, wrong_labels, _, _ = right_wrong_split(train_texts, train_labels, train_logits)
-                    additional_train_texts, additional_train_labels, additional_train_logits = modify_wrong_to_right_samples_by_sbert(args, model, tokenizer, wrong_texts, wrong_labels, answer_options_pool)
-            elif args.negative is None:
-                if os.path.exists(os.path.join(args.base_dir, 'additional_samples.json')):
-                    print('Load saved additional samples ...')
-                    with open(os.path.join(args.base_dir, 'additional_samples.json'), 'r') as f:
-                        json_file = json.load(f)
-                        additional_train_texts = json_file['texts']
-                        additional_train_labels = json_file['labels']
-                        additional_train_logits = json_file['logits']
-                else:
-                    print('Generate additional samples ...')
-                    _, wrong_texts, _, wrong_labels, _, _ = right_wrong_split(train_texts, train_labels, train_logits)
-                    additional_train_texts, additional_train_labels, additional_train_logits = modify_wrong_to_right_samples(args, model, tokenizer, wrong_texts, wrong_labels, answer_options_pool)
+            if os.path.exists(os.path.join(args.base_dir, 'additional_samples.json')):
+                print('Load saved additional samples ...')
+                with open(os.path.join(args.base_dir, 'additional_samples.json'), 'r') as f:
+                    json_file = json.load(f)
+                    additional_train_texts = json_file['texts']
+                    additional_train_labels = json_file['labels']
+                    additional_train_logits = json_file['logits']
+            else:
+                print('Generate additional samples ...')
+                _, wrong_texts, _, wrong_labels, _, _ = right_wrong_split(train_texts, train_labels, train_logits)
+                additional_train_texts, additional_train_labels, additional_train_logits = modify_wrong_to_right_samples(args, model, tokenizer, wrong_texts, wrong_labels, answer_options_pool)
             train_texts.extend(additional_train_texts)
             train_labels.extend(additional_train_labels)
             train_logits.extend(additional_train_logits)
+        
         train_dataset = TASK_CONFIG[args.cur_task]['dataset-kd'](tokenizer, train_texts, train_labels, train_logits)
         valid_dataset = TASK_CONFIG[args.cur_task]['dataset-kd'](tokenizer, valid_texts, valid_labels, valid_logits)
     else:
@@ -148,7 +108,7 @@ def main(args):
     print('training_size:', args.training_size)
     print('Train Set:', len(train_dataset), 'Valid Set:', len(valid_dataset))
     
-    
+
     # train LMs on QA datasets
     optimizer = AdamW(model.parameters(), lr=args.lr)
     if 'KD' in args.training_type:
