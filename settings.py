@@ -18,8 +18,8 @@ from utils import CriterionForKD, TrainerForKD, Trainer, CriterionForSKD
 
 def parser_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--cur_dir', type=str, default='/home/chaehyeong/CKL')
-    parser.add_argument('--root_dir', type=str, default='/home/chaehyeong/nas')
+    parser.add_argument('--cur_dir', type=str, default='/home/intern/seungjun/commonsense/CCL')
+    parser.add_argument('--root_dir', type=str, default='/home/intern/nas')
 
     parser.add_argument('--lm', type=str, default='roberta-large', choices=['roberta-large', 'roberta-cskg'], help='Pre-trained LM or KG fine-tuned LM.')
     parser.add_argument('--pre_task', type=str, nargs='+', help='Which QA dataset is used for trainining LM.')
@@ -29,7 +29,7 @@ def parser_args():
     parser.add_argument('--split_type', choices=['prob', 'num'])
     parser.add_argument('--training_size', required=True, help='Number/Proportion of samples to use for training LM.')
     parser.add_argument('--sampling_type', choices=['random', 'uniform', 'skewed', 'reversed'])
-    parser.add_argument('--negative', type=str, choices=['sbert'], default=None)
+    parser.add_argument('--negative', type=str, choices=['sbert', 'biencoder'], default=None)
 
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--lr', type=float, default=1e-6)
@@ -61,6 +61,11 @@ def parser_args():
             f'-ts{args.training_size}-'.join(args.pre_task) + f'-ts{args.training_size}-' + args.cur_task + f'-ts{args.training_size}' if 'ST' in args.training_type else args.cur_task + f'-ts{args.training_size}',
             args.training_type
             )
+
+    if args.negative == 'biencoder':
+        args.pickle_dir = os.path.join(
+            args.root_dir, 'CCL', 'encoder', f'{args.cur_task}-dict.pickle'
+        )
     args.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
     return args

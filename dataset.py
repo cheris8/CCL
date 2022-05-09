@@ -190,6 +190,24 @@ class BiEncoderDataset(Dataset):
     def __len__(self):
         return len(self.input)
 
+class SingleEncoderDataset(Dataset):
+    def __init__(self, tokenizer, input):
+        self.roberta_tokenizer = tokenizer
+        self.input = input
+        self.context_tokenized=[]
+        self.answer_tokenized=[]
+        for idx in self.input:
+            context = idx
+            encoded_context = self.roberta_tokenizer(context, padding=True, truncation=True, return_tensors='pt')
+            self.context_tokenized.append(encoded_context)
+
+    def __getitem__(self, idx):
+        return (self.context_tokenized[idx], 0)
+
+    def __len__(self):
+        return len(self.input)
+
+        
 class AtomicDataset(Dataset):
     def __init__(self, tokenizer, x, y):
         # x: list of tuples containing (context, answer1, answer2, answer3)
@@ -566,4 +584,38 @@ def biencoder_batch(batch):
     
 
     batch = (torch.stack(padded_input_ids_context), torch.stack(padded_input_ids_answer), torch.stack(padded_attention_mask_context), torch.stack(padded_attention_mask_answer))
+    return batch
+
+
+def singleencoder_batch(batch):
+    
+    batch_size = len(batch)
+    contexts, _ = zip(*batch)
+
+    input_ids_context=[]
+    attention_mask_context=[]
+    max_len_for_context=0
+    for context in contexts:
+        input_ids_context.append(context['input_ids'][0])
+        attention_mask_context.append(context['attention_mask'][0])
+        if context['input_ids'][0].shape[0] > max_len_for_context:
+            max_len_for_context = context['input_ids'][0].shape[0]
+
+
+    padded_input_ids_context=[]
+    padded_attention_mask_context=[]
+    for input_ids, attention_mask in zip(input_ids_context, attention_mask_context):
+        padding_len = max_len_for_context - input_ids.shape[0]
+        if padding_len > 0:
+            padded_input_ids = torch.cat([input_ids, torch.LongTensor([0] * padding_len)])
+            padded_attention_mask = torch.cat([attention_mask, torch.LongTensor([0] * padding_len)])
+            padded_input_ids_context.append(padded_input_ids)
+            padded_attention_mask_context.append(padded_attention_mask)            
+        else:
+            padded_input_ids_context.append(input_ids)
+            padded_attention_mask_context.append(attention_mask)
+            
+    
+
+    batch = (torch.stack(padded_input_ids_context), torch.stack(padded_attention_mask_context))
     return batch

@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=0 python /home/intern/seungjun/commonsense/CCL/train_biencoder.py --cur_task cmqa --training_size 9000

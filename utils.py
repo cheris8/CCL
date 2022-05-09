@@ -6,7 +6,7 @@ import numpy as np
 from numpy.lib.npyio import _savez_compressed_dispatcher
 import pandas as pd
 from tqdm.auto import tqdm
-
+import pickle
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -107,7 +107,16 @@ def get_best_model_path(path):
     best_acc = max(acc_to_file.keys())
     return os.path.join(path, acc_to_file.get(best_acc))
 
-
+def get_best_loss_path(path):
+    all_files = os.listdir(path)
+    files = [file for file in all_files if file.endswith('.pt')]
+    losses = [float(file[-9:-3]) for file in files]
+    assert len(files) == len(losses)
+    loss_to_file = {}
+    for file, loss in zip(files, losses):
+        loss_to_file[loss] = file
+    best_loss = min(loss_to_file.keys())
+    return os.path.join(path, loss_to_file.get(best_loss))
 
 def get_predictions_from_model(args, model, tokenizer, texts, labels):
     dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, texts, labels)
@@ -192,6 +201,61 @@ def modify_wrong_to_right_samples_by_sbert(args, model, tokenizer, wrong_texts, 
         cos_sim = util.cos_sim(anchor_embedding, answer_options_embeddings).squeeze(0).tolist()
         answer_options_sorted = [answer_option for sim, answer_option in sorted(zip(cos_sim, answer_options_pool), reverse=True) if (sim < 0.9)]
 
+        text_per_sample, label_per_sample = create_data_per_sample(num_choices, start_idx, wrong_text, wrong_label, answer_options_sorted)
+        dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, text_per_sample, label_per_sample)
+        data_loader = DataLoader(dataset, batch_size=1, shuffle=False)
+        torch.cuda.empty_cache()
+        with torch.no_grad():
+            for batch_idx, batch in enumerate(data_loader):
+                input_ids = batch[0]['input_ids'].to(args.device)
+                attention_mask = batch[0]['attention_mask'].to(args.device)
+                label = batch[1].to(args.device)
+                output = model(input_ids=input_ids, attention_mask=attention_mask, labels=label)
+                _, logit = output[0], output[1]
+                pred = torch.argmax(nn.Softmax(dim=1)(logit), dim=1)
+                if pred == label:
+                    print(f'Select {batch_idx} for {done_cnt}-th sample ...')
+                    right_texts.append(text_per_sample[batch_idx])
+                    right_labels.append(label_per_sample[batch_idx])
+                    right_logits.append(logit.to('cpu').tolist())
+                    done_cnt += 1
+                    torch.cuda.empty_cache()
+                    break
+                torch.cuda.empty_cache()
+    torch.cuda.empty_cache()
+    save_samples(args, right_texts, right_labels, right_logits)
+    return right_texts, right_labels, right_logits
+
+def modify_wrong_to_right_samples_by_biencoder(args, model, tokenizer, biencoder_model, encoded_answer_candidate_dir, wrong_texts, wrong_labels, answer_options_pool):
+    
+    print('Number of incorrectly predicted samples:', len(wrong_labels))
+
+    num_choices = TASK_CONFIG[args.cur_task]['num_choices']
+    start_idx = TASK_CONFIG[args.cur_task]['context'] + TASK_CONFIG[args.cur_task]['question']
+
+    model.to(args.device)
+    model.eval()
+
+    biencoder_model.to(args.device)
+    biencoder_model.eval()
+
+    with open(encoded_answer_candidate_dir, 'rb') as f:
+        answer_candidate_embedding = pickle.load(f)
+    answer_option_embedding = [answer_candidate_embedding[answer] for answer in answer_candidate_embedding]
+    answer_options = [answer for answer in answer_candidate_embedding]
+
+
+    # find and save correctly predicted samples
+    right_texts = []; right_labels = []; right_logits = []
+    done_cnt = 0
+    for wrong_text, wrong_label in zip(wrong_texts, wrong_labels):
+        print(f'Trying {done_cnt}-th sample of {len(wrong_labels)} samples ...')
+        get_text = wrong_text[start_idx+wrong_label]
+        encoded_text = tokenizer(get_text, padding=True, truncation=True, return_tensors='pt')
+        anchor_embedding = biencoder_model.encode_context(input_ids=encoded_text['input_ids'].to(args.device), input_masks=encoded_text['attention_mask'].to(args.device)).detach().cpu()
+        cos_similiarity = nn.CosineSimilarity(dim=1)
+        cos_sim = [cos_similiarity(anchor_embedding, answer_candidate) for answer_candidate in answer_option_embedding]
+        answer_options_sorted = [answer_option for sim, answer_option in sorted(zip(cos_sim, answer_options), reverse=True)]
         text_per_sample, label_per_sample = create_data_per_sample(num_choices, start_idx, wrong_text, wrong_label, answer_options_sorted)
         dataset = TASK_CONFIG[args.cur_task]['dataset'](tokenizer, text_per_sample, label_per_sample)
         data_loader = DataLoader(dataset, batch_size=1, shuffle=False)

@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=1 python /home/intern/seungjun/commonsense/CCL/encode_answer_candidate.py

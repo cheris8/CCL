@@ -1,0 +1,1 @@
+CUDA_VISIBLE_DEVICES=3 python /home/intern/seungjun/commonsense/CCL/train.py --lm 'roberta-large'  --training_size 9000 --pre_task cmqa --cur_task csqa --training_type STRKD --split_type num --negative biencoder --batch_size 4

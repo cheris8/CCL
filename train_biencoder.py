@@ -41,7 +41,7 @@ def main(args):
     roberta_model_1 = RobertaModel.from_pretrained('roberta-large')
     roberta_model_2 = RobertaModel.from_pretrained('roberta-large')
     root_dir = '/home/intern/nas'
-    base_dir = os.path.join('/home/intern/nas/CCL/roberta-large', args.cur_task + f'-ts{args.training_size}'+'-encoder')
+    base_dir = os.path.join('/home/intern/nas/CCL/bi-encoder', args.cur_task + f'-ts{args.training_size}')
     make_dir(base_dir)
     print('Directory:', base_dir)
     device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')

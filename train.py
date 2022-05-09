@@ -15,8 +15,8 @@ from transformers import RobertaTokenizer, RobertaModel, AdamW
 from sklearn.model_selection import train_test_split
 
 from settings import args, TASK_CONFIG, TRAINING_CONFIG
-from model import Multiple_Choice_Model
-from utils import make_dir, get_best_model_path, get_predictions_from_model, get_answer_options_pool, modify_wrong_to_right_samples_by_sbert, right_wrong_split, modify_wrong_to_right_samples, sort_samples_by_similarity
+from model import Multiple_Choice_Model, BiEncoder
+from utils import make_dir, get_best_model_path, get_predictions_from_model, get_answer_options_pool, modify_wrong_to_right_samples_by_sbert, right_wrong_split, modify_wrong_to_right_samples, sort_samples_by_similarity, modify_wrong_to_right_samples_by_biencoder, get_best_loss_path
 
 
 import warnings
@@ -53,14 +53,12 @@ def main(args):
         best_path = get_best_model_path(path)
         restore_dict = torch.load(best_path, map_location=args.device)
         model.load_state_dict(restore_dict)
-
     # dataset and dataloader
     target_names = TASK_CONFIG[args.cur_task]['target_names']
     num_choices = TASK_CONFIG[args.cur_task]['num_choices']
     tokenizer = RobertaTokenizer.from_pretrained('roberta-large')
     texts, labels = TASK_CONFIG[args.cur_task]['load'](args.root_dir, 'train')
     answer_options_pool = get_answer_options_pool(texts, num_choices)
-
     if 'Sampling' in args.training_type:
         logits = get_predictions_from_model(args, model, tokenizer, texts, labels)
         train_texts, valid_texts, train_labels, valid_labels, train_logits, valid_logits = train_test_split(texts, labels, logits, test_size=0.1, random_state=42)
@@ -92,6 +90,13 @@ def main(args):
                 else:
                     print('Generate additional samples ...')
                     additional_train_texts, additional_train_labels, additional_train_logits = modify_wrong_to_right_samples_by_sbert(args, model, tokenizer, wrong_texts, wrong_labels, answer_options_pool)
+            elif args.negative == 'biencoder':
+                print('Generate additional samples by bi-encoder...')
+                roberta_model_2 = RobertaModel.from_pretrained(model_name)
+                roberta_model_3 = RobertaModel.from_pretrained(model_name)
+                biencoder_model = BiEncoder(roberta_model_2, roberta_model_3)
+                encoded_answer_candidate_dir = args.pickle_dir
+                additional_train_texts, additional_train_labels, additional_train_logits = modify_wrong_to_right_samples_by_biencoder(args, model, tokenizer, biencoder_model, encoded_answer_candidate_dir, wrong_texts, wrong_labels, answer_options_pool)
             elif args.negative is None:
                 if os.path.exists(os.path.join(args.base_dir, 'additional_samples.json')):
                     print('Load saved additional samples ...')
